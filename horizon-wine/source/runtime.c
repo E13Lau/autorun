@@ -846,6 +846,71 @@ static int runtime_wheel[2];
 void wine_nx_leave_process( const char *why );
 void wine_nx_request_quit( const char *why );
 
+/* A USB mouse, on the dock or through a USB-C adapter. Horizon keeps its last
+ * 17 reports; each poll takes the ones it has not seen, so a report is counted
+ * once however fast or slow win32u polls. Its buttons map to the pointer's:
+ * left, right, middle, then back and forward as XBUTTON1 and XBUTTON2. */
+static u64 runtime_mouse_sampling;
+static int runtime_mouse_connected = -1;
+
+static unsigned int runtime_mouse_buttons( u32 held )
+{
+    return (held & HidMouseButton_Left ? 0x1 : 0) | (held & HidMouseButton_Right ? 0x2 : 0) |
+           (held & HidMouseButton_Middle ? 0x4 : 0) | (held & HidMouseButton_Back ? 0x8 : 0) |
+           (held & HidMouseButton_Forward ? 0x10 : 0);
+}
+
+/* A wheel notch is one count from Horizon; Windows counts it as WHEEL_DELTA. */
+static int runtime_mouse_wheel( s32 delta )
+{
+    return delta >= -10 && delta <= 10 ? delta * 120 : delta;
+}
+
+/* Moves the pointer by what the mouse did since the last poll and returns the
+ * buttons it holds, or 0 with nothing done when no mouse is connected. */
+static unsigned int runtime_mouse_poll( int *moved )
+{
+    HidMouseState states[17];
+    size_t count = hidGetMouseStates( states, 17 ), i;
+    int connected = count && (states[0].attributes & HidMouseAttribute_IsConnected);
+    s64 dx = 0, dy = 0;
+
+    if (connected != runtime_mouse_connected)
+    {
+        if (runtime_mouse_connected != -1 || connected)
+            log_line( "[NXMOUSE] USB mouse %s", connected ? "connected" : "disconnected" );
+        runtime_mouse_connected = connected;
+        if (connected) runtime_mouse_sampling = states[0].sampling_number;
+    }
+    if (!connected) return 0;
+    /* Newest first: add up the reports newer than the last one counted. */
+    for (i = 0; i < count && states[i].sampling_number > runtime_mouse_sampling; i++)
+    {
+        dx += states[i].delta_x;
+        dy += states[i].delta_y;
+        if (states[i].wheel_delta_y || states[i].wheel_delta_x)
+        {
+            static unsigned int wheels_logged;
+
+            if (wheels_logged++ < 4)
+                log_line( "[NXMOUSE] wheel %d,%d", states[i].wheel_delta_y, states[i].wheel_delta_x );
+            runtime_wheel[0] = max( -7680, min( 7680, runtime_wheel[0] + runtime_mouse_wheel( states[i].wheel_delta_y ) ) );
+            runtime_wheel[1] = max( -7680, min( 7680, runtime_wheel[1] + runtime_mouse_wheel( states[i].wheel_delta_x ) ) );
+        }
+    }
+    runtime_mouse_sampling = states[0].sampling_number;
+    if (dx || dy)
+    {
+        int old_x = wine_nx_pointer.x, old_y = wine_nx_pointer.y;
+
+        wine_nx_pointer.motion_x += dx;
+        wine_nx_pointer.motion_y += dy;
+        pointer_cursor_place( &wine_nx_pointer, wine_nx_pointer.x + dx, wine_nx_pointer.y + dy );
+        *moved |= (int)wine_nx_pointer.x != old_x || (int)wine_nx_pointer.y != old_y;
+    }
+    return runtime_mouse_buttons( states[0].buttons );
+}
+
 
 int wine_nx_pointer_poll( int *x, int *y, unsigned int *buttons )
 {
@@ -863,6 +928,7 @@ int wine_nx_pointer_poll( int *x, int *y, unsigned int *buttons )
     if (!wine_nx_pointer_ready)
     {
         hidInitializeTouchScreen();
+        hidInitializeMouse();
         padConfigureInput( 1, HidNpadStyleSet_NpadStandard );
         padInitializeDefault( &wine_nx_pad );
         wine_nx_pointer_tick = armGetSystemTick();
@@ -928,6 +994,12 @@ int wine_nx_pointer_poll( int *x, int *y, unsigned int *buttons )
         /* The profile's mouse-speed scales the built-in cursor speed. */
         wine_nx_pointer.speed = POINTER_CURSOR_SPEED * profile->mouse_speed / 100.0;
         moved |= pointer_cursor_step( &wine_nx_pointer, output.mouse_x, output.mouse_y, elapsed );
+    }
+    /* A USB mouse works in every control mode; its clicks wait while the
+     * floating keyboard has the controller. */
+    {
+        unsigned int mouse = runtime_mouse_poll( &moved );
+        if (!keyboard) output.buttons |= mouse;
     }
     input_key_edges_update( &runtime_key_edges, output.keys );
     if (output.wheels && (output.wheels != last_wheels || now >= wheel_next))
