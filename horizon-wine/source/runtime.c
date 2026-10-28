@@ -899,6 +899,16 @@ static unsigned int runtime_mouse_poll( int *moved )
         }
     }
     runtime_mouse_sampling = states[0].sampling_number;
+    {
+        /* What Horizon reports, while it is still being learnt which mice
+         * send what: the first changes of the buttons, and of the wheel. */
+        static u32 logged_buttons;
+        static unsigned int changes_logged;
+
+        if (states[0].buttons != logged_buttons && changes_logged++ < 32)
+            log_line( "[NXMOUSE] buttons %x (was %x), %zu new reports", states[0].buttons, logged_buttons, i );
+        logged_buttons = states[0].buttons;
+    }
     if (dx || dy)
     {
         int old_x = wine_nx_pointer.x, old_y = wine_nx_pointer.y;
@@ -909,6 +919,75 @@ static unsigned int runtime_mouse_poll( int *moved )
         *moved |= (int)wine_nx_pointer.x != old_x || (int)wine_nx_pointer.y != old_y;
     }
     return runtime_mouse_buttons( states[0].buttons );
+}
+
+/* A USB keyboard. Horizon gives the keys held as HID usages; each becomes the
+ * Windows virtual key it is on a US layout, and goes out with the controller's
+ * mapped keys, so a key is pressed and released once however the two overlap.
+ * The left and right modifiers stay apart, as Windows keeps them. */
+static const unsigned char runtime_hid_vk[256] =
+{
+    [HidKeyboardKey_A] = 'A', [HidKeyboardKey_B] = 'B', [HidKeyboardKey_C] = 'C', [HidKeyboardKey_D] = 'D',
+    [HidKeyboardKey_E] = 'E', [HidKeyboardKey_F] = 'F', [HidKeyboardKey_G] = 'G', [HidKeyboardKey_H] = 'H',
+    [HidKeyboardKey_I] = 'I', [HidKeyboardKey_J] = 'J', [HidKeyboardKey_K] = 'K', [HidKeyboardKey_L] = 'L',
+    [HidKeyboardKey_M] = 'M', [HidKeyboardKey_N] = 'N', [HidKeyboardKey_O] = 'O', [HidKeyboardKey_P] = 'P',
+    [HidKeyboardKey_Q] = 'Q', [HidKeyboardKey_R] = 'R', [HidKeyboardKey_S] = 'S', [HidKeyboardKey_T] = 'T',
+    [HidKeyboardKey_U] = 'U', [HidKeyboardKey_V] = 'V', [HidKeyboardKey_W] = 'W', [HidKeyboardKey_X] = 'X',
+    [HidKeyboardKey_Y] = 'Y', [HidKeyboardKey_Z] = 'Z',
+    [HidKeyboardKey_D1] = '1', [HidKeyboardKey_D2] = '2', [HidKeyboardKey_D3] = '3', [HidKeyboardKey_D4] = '4',
+    [HidKeyboardKey_D5] = '5', [HidKeyboardKey_D6] = '6', [HidKeyboardKey_D7] = '7', [HidKeyboardKey_D8] = '8',
+    [HidKeyboardKey_D9] = '9', [HidKeyboardKey_D0] = '0',
+    [HidKeyboardKey_Return] = 0x0d, [HidKeyboardKey_Escape] = 0x1b, [HidKeyboardKey_Backspace] = 0x08,
+    [HidKeyboardKey_Tab] = 0x09, [HidKeyboardKey_Space] = 0x20,
+    [HidKeyboardKey_Minus] = 0xbd, [HidKeyboardKey_Plus] = 0xbb, [HidKeyboardKey_OpenBracket] = 0xdb,
+    [HidKeyboardKey_CloseBracket] = 0xdd, [HidKeyboardKey_Pipe] = 0xdc, [HidKeyboardKey_Tilde] = 0xdc,
+    [HidKeyboardKey_Semicolon] = 0xba, [HidKeyboardKey_Quote] = 0xde, [HidKeyboardKey_Backquote] = 0xc0,
+    [HidKeyboardKey_Comma] = 0xbc, [HidKeyboardKey_Period] = 0xbe, [HidKeyboardKey_Slash] = 0xbf,
+    [HidKeyboardKey_CapsLock] = 0x14,
+    [HidKeyboardKey_F1] = 0x70, [HidKeyboardKey_F2] = 0x71, [HidKeyboardKey_F3] = 0x72, [HidKeyboardKey_F4] = 0x73,
+    [HidKeyboardKey_F5] = 0x74, [HidKeyboardKey_F6] = 0x75, [HidKeyboardKey_F7] = 0x76, [HidKeyboardKey_F8] = 0x77,
+    [HidKeyboardKey_F9] = 0x78, [HidKeyboardKey_F10] = 0x79, [HidKeyboardKey_F11] = 0x7a, [HidKeyboardKey_F12] = 0x7b,
+    [HidKeyboardKey_PrintScreen] = 0x2c, [HidKeyboardKey_ScrollLock] = 0x91, [HidKeyboardKey_Pause] = 0x13,
+    [HidKeyboardKey_Insert] = 0x2d, [HidKeyboardKey_Home] = 0x24, [HidKeyboardKey_PageUp] = 0x21,
+    [HidKeyboardKey_Delete] = 0x2e, [HidKeyboardKey_End] = 0x23, [HidKeyboardKey_PageDown] = 0x22,
+    [HidKeyboardKey_RightArrow] = 0x27, [HidKeyboardKey_LeftArrow] = 0x25,
+    [HidKeyboardKey_DownArrow] = 0x28, [HidKeyboardKey_UpArrow] = 0x26,
+    [HidKeyboardKey_NumLock] = 0x90, [HidKeyboardKey_NumPadDivide] = 0x6f, [HidKeyboardKey_NumPadMultiply] = 0x6a,
+    [HidKeyboardKey_NumPadSubtract] = 0x6d, [HidKeyboardKey_NumPadAdd] = 0x6b,
+    [HidKeyboardKey_NumPadEnter] = INPUT_NUMPAD_ENTER,
+    [HidKeyboardKey_NumPad1] = 0x61, [HidKeyboardKey_NumPad2] = 0x62, [HidKeyboardKey_NumPad3] = 0x63,
+    [HidKeyboardKey_NumPad4] = 0x64, [HidKeyboardKey_NumPad5] = 0x65, [HidKeyboardKey_NumPad6] = 0x66,
+    [HidKeyboardKey_NumPad7] = 0x67, [HidKeyboardKey_NumPad8] = 0x68, [HidKeyboardKey_NumPad9] = 0x69,
+    [HidKeyboardKey_NumPad0] = 0x60, [HidKeyboardKey_NumPadDot] = 0x6e,
+    [HidKeyboardKey_Backslash] = 0xe2, [HidKeyboardKey_Application] = 0x5d,
+    [HidKeyboardKey_LeftControl] = 0xa2, [HidKeyboardKey_LeftShift] = 0xa0, [HidKeyboardKey_LeftAlt] = 0xa4,
+    [HidKeyboardKey_LeftGui] = 0x5b, [HidKeyboardKey_RightControl] = 0xa3, [HidKeyboardKey_RightShift] = 0xa1,
+    [HidKeyboardKey_RightAlt] = 0xa5, [HidKeyboardKey_RightGui] = 0x5c,
+};
+static int runtime_keyboard_connected = -1;
+
+/* Adds the keys a USB keyboard holds to keys, a bit per virtual key. */
+static void runtime_keyboard_poll( uint64_t keys[INPUT_KEY_WORDS] )
+{
+    HidKeyboardState state;
+    int connected = hidGetKeyboardStates( &state, 1 ) && (state.keys[0] | state.keys[1] | state.keys[2] |
+                                                           state.keys[3] | state.modifiers);
+    unsigned int usage;
+
+    /* Horizon says nothing of whether a keyboard is there; the first key
+     * pressed says it is. */
+    if (connected && runtime_keyboard_connected != 1)
+    {
+        log_line( "[NXKEYBOARD] USB keyboard in use" );
+        runtime_keyboard_connected = 1;
+    }
+    if (!connected) return;
+    for (usage = 0; usage < 256; usage++)
+    {
+        unsigned int vk = runtime_hid_vk[usage];
+
+        if (vk && (state.keys[usage / 64] >> (usage % 64) & 1)) keys[vk / 64] |= 1ull << (vk % 64);
+    }
 }
 
 
@@ -929,6 +1008,7 @@ int wine_nx_pointer_poll( int *x, int *y, unsigned int *buttons )
     {
         hidInitializeTouchScreen();
         hidInitializeMouse();
+        hidInitializeKeyboard();
         padConfigureInput( 1, HidNpadStyleSet_NpadStandard );
         padInitializeDefault( &wine_nx_pad );
         wine_nx_pointer_tick = armGetSystemTick();
@@ -995,12 +1075,13 @@ int wine_nx_pointer_poll( int *x, int *y, unsigned int *buttons )
         wine_nx_pointer.speed = POINTER_CURSOR_SPEED * profile->mouse_speed / 100.0;
         moved |= pointer_cursor_step( &wine_nx_pointer, output.mouse_x, output.mouse_y, elapsed );
     }
-    /* A USB mouse works in every control mode; its clicks wait while the
-     * floating keyboard has the controller. */
+    /* A USB mouse and keyboard work in every control mode; their clicks and
+     * keys wait while the floating keyboard has the controller. */
     {
         unsigned int mouse = runtime_mouse_poll( &moved );
         if (!keyboard) output.buttons |= mouse;
     }
+    if (!keyboard) runtime_keyboard_poll( output.keys );
     input_key_edges_update( &runtime_key_edges, output.keys );
     if (output.wheels && (output.wheels != last_wheels || now >= wheel_next))
     {
